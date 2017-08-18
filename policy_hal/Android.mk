@@ -38,6 +38,7 @@ LOCAL_SHARED_LIBRARIES := \
     libserviceutility
 
 LOCAL_STATIC_LIBRARIES := \
+    libbase \
     libmedia_helper \
 
 ifneq ($(TARGET_SUPPORTS_WEARABLES),true)
