@@ -1370,6 +1370,92 @@ bool AudioPolicyManagerCustom::isDirectOutput(audio_io_handle_t output) {
     }
     return false;
 }
+
+bool static tryForDirectPCM(int bitWidth, audio_output_flags_t *flags, uint32_t samplingRate)
+{
+    bool playerDirectPCM = false; // Output request for Track created by mediaplayer
+    bool trackDirectPCM = false;  // Output request for track created by other apps
+    bool offloadDisabled = property_get_bool("audio.offload.disable", false);
+
+    // Direct PCM is allowed only if
+    // In case of mediaPlayer playback
+    // 16 bit direct pcm or 24bit direct PCM property is set and
+    // the FLAG requested is DIRECT_PCM ( NuPlayer case) or
+    // In case of AudioTracks created by apps
+    // track offload is enabled and FLAG requested is FLAG_NONE.
+
+    if (offloadDisabled) {
+        ALOGI("offload disabled by audio.offload.disable=%d", offloadDisabled);
+    }
+
+    if (*flags == AUDIO_OUTPUT_FLAG_DIRECT_PCM) {
+       if (bitWidth == 24 || bitWidth == 32)
+           playerDirectPCM =
+                property_get_bool("audio.offload.pcm.24bit.enable", false);
+       else
+           playerDirectPCM =
+                property_get_bool("audio.offload.pcm.16bit.enable", false);
+       // Reset flag to NONE so that we can still reuse direct pcm criteria check
+       // in getOutputforDevice
+       *flags = AUDIO_OUTPUT_FLAG_NONE;
+    } else if ((*flags == AUDIO_OUTPUT_FLAG_NONE) && (samplingRate % SAMPLE_RATE_8000 == 0)) {
+        trackDirectPCM = property_get_bool("audio.offload.track.enable", true);
+    }
+
+    ALOGI("Direct PCM %s for this request",
+       (!offloadDisabled && (trackDirectPCM || playerDirectPCM))?"can be enabled":"is disabled");
+
+    return (!offloadDisabled && (trackDirectPCM || playerDirectPCM));
+}
+
+status_t AudioPolicyManagerCustom::getOutputForAttr(const audio_attributes_t *attr,
+                                              audio_io_handle_t *output,
+                                              audio_session_t session,
+                                              audio_stream_type_t *stream,
+                                              uid_t uid,
+                                              uint32_t samplingRate,
+                                              audio_format_t format,
+                                              audio_channel_mask_t channelMask,
+                                              audio_output_flags_t flags,
+                                              audio_port_handle_t selectedDeviceId,
+                                              const audio_offload_info_t *offloadInfo)
+{
+    audio_offload_info_t tOffloadInfo = AUDIO_INFO_INITIALIZER;
+
+    uint32_t bitWidth = (audio_bytes_per_sample(format) * 8);
+
+
+    if (tryForDirectPCM(bitWidth, &flags, samplingRate) &&
+        (offloadInfo == NULL)) {
+
+        tOffloadInfo.sample_rate  = samplingRate;
+        tOffloadInfo.channel_mask = channelMask;
+        tOffloadInfo.format = format;
+        tOffloadInfo.stream_type = *stream;
+        tOffloadInfo.bit_width = bitWidth;
+        if (attr != NULL) {
+            ALOGV("found attribute .. setting usage %d ", attr->usage);
+            tOffloadInfo.usage = attr->usage;
+        } else {
+            ALOGD("%s:: attribute is NULL .. no usage set", __func__);
+        }
+        offloadInfo = &tOffloadInfo;
+    }
+
+    audio_port_handle_t portId = AUDIO_PORT_HANDLE_NONE;
+
+    audio_config_t config = AUDIO_CONFIG_INITIALIZER;
+    config.sample_rate = (uint32_t)samplingRate;
+    config.channel_mask = (audio_channel_mask_t)channelMask;
+    config.format = format;
+    config.offload_info = *offloadInfo;
+
+    return AudioPolicyManager::getOutputForAttr(attr, output, session, stream,
+                                                (uid_t)uid, &config, flags,
+                                                (audio_port_handle_t)selectedDeviceId,
+                                                &portId);
+}
+
 audio_io_handle_t AudioPolicyManagerCustom::getOutputForDevice(
         audio_devices_t device,
         audio_session_t session __unused,
@@ -1866,16 +1952,22 @@ status_t AudioPolicyManagerCustom::getInputForAttr(const audio_attributes_t *att
 
 #endif
 
+    audio_port_handle_t portId = AUDIO_PORT_HANDLE_NONE;
+
+    audio_config_base_t config;
+    config.sample_rate = (uint32_t)samplingRate;
+    config.channel_mask = (audio_channel_mask_t)channelMask;
+    config.format = format;
+
     return AudioPolicyManager::getInputForAttr(attr,
                                                input,
                                                session,
                                                uid,
-                                               samplingRate,
-                                               format,
-                                               channelMask,
+                                               &config,
                                                flags,
                                                selectedDeviceId,
-                                               inputType);
+                                               inputType,
+                                               &portId);
 }
 status_t AudioPolicyManagerCustom::startInput(audio_io_handle_t input,
                                         audio_session_t session)
